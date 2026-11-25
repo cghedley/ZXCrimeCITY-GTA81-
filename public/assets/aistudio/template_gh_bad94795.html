@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CRIME CITY for the ZX81</title>
+<style>
+:root{
+  --bg:#f3f1ea; --fg:#1c1b19; --muted:#6b675e; --panel:#e8e5db; --line:#cfcabd; --accent:#b3261e;
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){ --bg:#151513; --fg:#ece9df; --muted:#a09b8e; --panel:#21201d; --line:#3a382f; --accent:#ff7b6e; }
+}
+:root[data-theme="dark"]{ --bg:#151513; --fg:#ece9df; --muted:#a09b8e; --panel:#21201d; --line:#3a382f; --accent:#ff7b6e; }
+html{ scroll-padding-top:env(safe-area-inset-top,0px); }
+*,*::before,*::after{ box-sizing:inherit; }
+body{ margin:0; background:var(--bg); color:var(--fg); font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+main{ max-width:760px; margin:0 auto; padding:20px 16px 36px; }
+h1{ font-size:22px; margin:0 0 2px; letter-spacing:.02em; }
+.sub{ margin:0 0 16px; color:var(--muted); font-size:14px; }
+.case{ background:#0c0c0c; border-radius:14px; padding:14px; box-shadow:0 2px 0 var(--line), 0 10px 24px rgba(0,0,0,.25); }
+.tv{ background:#000; border-radius:8px; padding:10px; }
+canvas{ display:block; width:100%; height:auto; aspect-ratio:4/3; image-rendering:pixelated; image-rendering:crisp-edges; background:#f4f3ec; border-radius:2px; }
+.bar{ display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; justify-content:space-between; margin:12px 0 0; font-size:13px; color:var(--muted); }
+.src{ display:inline-flex; align-items:center; gap:7px; }
+.dot{ width:9px; height:9px; border-radius:50%; background:#8a8a80; flex:none; }
+.dot.online{ background:#2e9d4f; } .dot.readonly{ background:#d89a1a; } .dot.offline{ background:#9a9a90; }
+button.reset{ font:inherit; font-size:13px; color:var(--fg); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:7px 12px; cursor:pointer; }
+button.reset:focus-visible, .key:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+.kb{ margin-top:12px; display:grid; gap:6px; user-select:none; -webkit-user-select:none; touch-action:none; }
+.row{ display:grid; grid-template-columns:repeat(10,1fr); gap:6px; }
+.key{ position:relative; min-height:46px; border:0; border-radius:7px; background:#d9d6cc; color:#111; font:600 15px/1 ui-monospace,Menlo,Consolas,monospace; padding:6px 2px 4px; cursor:pointer; box-shadow:0 2px 0 #7d7a70; touch-action:none; }
+.key.dn{ transform:translateY(2px); box-shadow:none; background:#bdb9ad; }
+.key small{ display:block; margin-top:3px; font:600 9px/1 system-ui,sans-serif; color:#a1261c; letter-spacing:.03em; min-height:9px; }
+.key.wide{ font-size:11px; }
+.help{ margin-top:16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:2px 14px; font-size:14px; }
+.help summary{ cursor:pointer; padding:10px 0; font-weight:600; }
+.help p{ margin:0 0 10px; }
+.submit{ margin-top:12px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:14px; display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; }
+.submit[hidden]{ display:none; }
+.submit a{ color:#fff; background:var(--accent); text-decoration:none; font-weight:600; padding:8px 12px; border-radius:8px; }
+.submit a[aria-disabled="true"]{ opacity:.5; pointer-events:none; }
+.submit button{ font:inherit; font-size:13px; color:var(--muted); background:none; border:0; text-decoration:underline; cursor:pointer; padding:6px; }
+.note{ margin:14px 2px 0; font-size:13px; color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>CRIME CITY</h1>
+  <p class="sub">A ZX81 game, running as the real Z80 machine code. 32×24 characters, black and white, no sound, a 40-key keyboard.</p>
+  <div class="case">
+    <div class="tv"><canvas id="scr" width="256" height="192" role="img" aria-label="ZX81 screen"></canvas></div>
+    <div class="bar">
+      <span class="src"><i id="dot" class="dot"></i><span id="srcText">High scores: connecting…</span></span>
+      <button class="reset" id="reset" type="button">Reset (RUN)</button>
+    </div>
+    <div class="kb" id="kb" aria-label="ZX81 keyboard"></div>
+  </div>
+  <div class="submit" id="submitBox" hidden>
+    <span id="submitText"></span>
+    <a id="submitLink" href="#" target="_blank" rel="noopener">Submit score on GitHub</a>
+    <button type="button" id="submitDiscard">Discard</button>
+  </div>
+  <details class="help">
+    <summary>How to play</summary>
+    <p>Steer with <b>5 6 7 8</b> (left, down, up, right) or the arrow keys. <b>0</b> stops, <b>E</b> leaves your car. Walk into a traffic car (<b>H</b>) to steal it. Run over pedestrians (<b>I</b>) for cash, but the police (inverse <b>Z</b>) will chase you. On foot, they bust you. In a car, they dent it.</p>
+    <p>Drive to the <b>$</b> to pick up a fare, then to the <b>X</b> before the timer runs out. Three lives. At the title screen press <b>Q</b> to drop back to BASIC.</p>
+    <p>When you beat the fifth score you type three initials with the keyboard. The game then offers a button that opens a ready-filled GitHub issue; press its green submit button (you need a free GitHub account). A minute or two later your score appears on the table everyone sees.</p>
+  </details>
+  <p class="note">Scores are checked by a GitHub Action when they are submitted, but they come from your browser, so the table runs on trust. Until your score is accepted it only shows on your own device.</p>
+</main>
+<script>
+/*Z80JS*/
+</script>
+<script>
+(function () {
+'use strict';
+var SYM = /*SYM*/;
+var PB64 = "/*P*/";
+
+/* ---------------------------------------------------------------- font (5x7 glyphs in 8x8 cells) */
+var CHARS = '"\u00a3$:?()><=+-*/;,.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';   // ZX81 codes 11..63
+var F5 = {
+ 'A':'01110,10001,10001,11111,10001,10001,10001','B':'11110,10001,10001,11110,10001,10001,11110','C':'01110,10001,10000,10000,10000,10001,01110',
+ 'D':'11110,10001,10001,10001,10001,10001,11110','E':'11111,10000,10000,11110,10000,10000,11111','F':'11111,10000,10000,11110,10000,10000,10000',
+ 'G':'01110,10001,10000,10111,10001,10001,01111','H':'10001,10001,10001,11111,10001,10001,10001','I':'01110,00100,00100,00100,00100,00100,01110',
+ 'J':'00111,00010,00010,00010,00010,10010,01100','K':'10001,10010,10100,11000,10100,10010,10001','L':'10000,10000,10000,10000,10000,10000,11111',
+ 'M':'10001,11011,10101,10101,10001,10001,10001','N':'10001,10001,11001,10101,10011,10001,10001','O':'01110,10001,10001,10001,10001,10001,01110',
+ 'P':'11110,10001,10001,11110,10000,10000,10000','Q':'01110,10001,10001,10001,10101,10010,01101','R':'11110,10001,10001,11110,10100,10010,10001',
+ 'S':'01111,10000,10000,01110,00001,00001,11110','T':'11111,00100,00100,00100,00100,00100,00100','U':'10001,10001,10001,10001,10001,10001,01110',
+ 'V':'10001,10001,10001,10001,10001,01010,00100','W':'10001,10001,10001,10101,10101,11011,10001','X':'10001,10001,01010,00100,01010,10001,10001',
+ 'Y':'10001,10001,01010,00100,00100,00100,00100','Z':'11111,00001,00010,00100,01000,10000,11111',
+ '0':'01110,10001,10011,10101,11001,10001,01110','1':'00100,01100,00100,00100,00100,00100,01110','2':'01110,10001,00001,00010,00100,01000,11111',
+ '3':'11110,00001,00001,01110,00001,00001,11110','4':'00010,00110,01010,10010,11111,00010,00010','5':'11111,10000,11110,00001,00001,10001,01110',
+ '6':'00110,01000,10000,11110,10001,10001,01110','7':'11111,00001,00010,00100,01000,01000,01000','8':'01110,10001,10001,01110,10001,10001,01110',
+ '9':'01110,10001,10001,01111,00001,00010,01100',
+ '"':'01010,01010,00000,00000,00000,00000,00000','\u00a3':'00110,01001,01000,11100,01000,01000,11111','$':'00100,01111,10100,01110,00101,11110,00100',
+ ':':'00000,00100,00000,00000,00100,00000,00000','?':'01110,10001,00001,00010,00100,00000,00100','(':'00010,00100,01000,01000,01000,00100,00010',
+ ')':'01000,00100,00010,00010,00010,00100,01000','>':'10000,01000,00100,00010,00100,01000,10000','<':'00001,00010,00100,01000,00100,00010,00001',
+ '=':'00000,00000,11111,00000,11111,00000,00000','+':'00000,00100,00100,11111,00100,00100,00000','-':'00000,00000,00000,11111,00000,00000,00000',
+ '*':'00000,10101,01110,11111,01110,10101,00000','/':'00001,00010,00010,00100,01000,01000,10000',';':'00000,00100,00000,00000,00100,00100,01000',
+ ',':'00000,00000,00000,00000,00110,00100,01000','.':'00000,00000,00000,00000,00000,01100,01100'
+};
+var glyphCache = {};
+function glyph(code) {
+  if (glyphCache[code]) return glyphCache[code];
+  var b = new Uint8Array(64), c = code & 127, inv = code & 128, x, y, i;
+  if (c >= 1 && c <= 10) {
+    for (y = 0; y < 8; y++) for (x = 0; x < 8; x++) {
+      var tl = x < 4 && y < 4, tr = x >= 4 && y < 4, bl = x < 4 && y >= 4, br = x >= 4 && y >= 4, on = 0, chq = ((x + y) & 1) === 0;
+      switch (c) { case 1: on = tl; break; case 2: on = tr; break; case 3: on = tl || tr; break; case 4: on = bl; break;
+        case 5: on = tl || bl; break; case 6: on = tr || bl; break; case 7: on = tr || bl || br; break;
+        case 8: on = chq; break; case 9: on = chq && y < 4; break; default: on = chq && y >= 4; }
+      b[y * 8 + x] = on ? 1 : 0;
+    }
+  } else if (c >= 11 && c <= 63) {
+    var rows = F5[CHARS.charAt(c - 11)];
+    if (rows) rows.split(',').forEach(function (r, ry) { for (var rx = 0; rx < 5; rx++) if (r.charAt(rx) === '1') b[ry * 8 + rx + 1] = 1; });
+  }
+  if (inv) for (i = 0; i < 64; i++) b[i] ^= 1;
+  return (glyphCache[code] = b);
+}
+
+/* ---------------------------------------------------------------- machine */
+var mem = new Uint8Array(65536);
+var pressedPhys = {}, pressedVirt = {};
+var ROWS = [['SHIFT','Z','X','C','V'],['A','S','D','F','G'],['Q','W','E','R','T'],['1','2','3','4','5'],['0','9','8','7','6'],['P','O','I','U','Y'],['ENTER','L','K','J','H'],['SPACE','.','M','N','B']];
+function inp(port) {
+  if ((port & 255) !== 0xFE) return 0xFF;
+  var hi = (port >> 8) & 255, v = 0xFF, bit, i, keys;
+  for (bit = 0; bit < 8; bit++) if (((hi >> bit) & 1) === 0) {
+    keys = ROWS[bit];
+    for (i = 0; i < 5; i++) if (pressedPhys[keys[i]] || pressedVirt[keys[i]]) v &= ~(1 << i);
+  }
+  return v;
+}
+var cpu = new Z80(function (a) { return mem[a]; }, function (a, v) { if (a >= 0x4000 && a < 0x8000) mem[a] = v; }, inp, function () {});
+var PBYTES = Uint8Array.from(atob(PB64), function (c) { return c.charCodeAt(0); });
+function loadMachine() {
+  mem.fill(0); mem.set(PBYTES, 0x4009); mem[0x0F2B] = 0xC9;          // ROM stub: SLOW just returns
+  mem[0x7FEE] = 0; mem[0x7FEF] = 0x70;                               // return address = "BASIC"
+  cpu.R.fill(0); cpu.f = 0; cpu.sp = 0x7FEE; cpu.pc = 0x4082; cpu.t = 0;
+}
+
+/* ---------------------------------------------------------------- high score table (stored in the GitHub repo) */
+var REPO_OVERRIDE = '';          // 'owner/repo' if this page is not served from owner.github.io/repo/
+var DEFAULTS = null, lastTable = null, connState = 'init';
+var PENDING_KEY = 'crimecity.pending.v2';
+function readTable() {
+  var out = [], i, b, n;
+  for (i = 0; i < 5; i++) {
+    b = SYM.HS + 5 * i; n = '';
+    for (var k = 0; k < 3; k++) n += String.fromCharCode(65 + mem[b + k] - 38);
+    out.push({ n: n, s: mem[b + 3] | (mem[b + 4] << 8) });
+  }
+  return out;
+}
+function writeTable(t) {
+  for (var i = 0; i < 5; i++) {
+    var b = SYM.HS + 5 * i, e = t[i];
+    for (var k = 0; k < 3; k++) mem[b + k] = 38 + e.n.charCodeAt(k) - 65;
+    mem[b + 3] = e.s & 255; mem[b + 4] = (e.s >> 8) & 255;
+  }
+}
+function validEntry(e) {
+  return e && typeof e.n === 'string' && /^[A-Z]{3}$/.test(e.n) && typeof e.s === 'number' && isFinite(e.s) && e.s >= 0 && e.s <= 65535 && Math.floor(e.s) === e.s;
+}
+function loadPending() {
+  try {
+    var p = JSON.parse(localStorage.getItem(PENDING_KEY) || '[]'), now = Date.now();
+    return Array.isArray(p) ? p.filter(function (e) { return validEntry(e) && (!e.t || now - e.t < 7 * 864e5); }) : [];
+  } catch (e) { return []; }
+}
+function savePending(p) { try { localStorage.setItem(PENDING_KEY, JSON.stringify(p.slice(0, 20))); } catch (e) {} }
+function withTimeout(p, ms) {
+  return new Promise(function (res, rej) { var t = setTimeout(function () { rej(new Error('timeout')); }, ms); p.then(function (v) { clearTimeout(t); res(v); }, function (e) { clearTimeout(t); rej(e); }); });
+}
+function repoInfo() {
+  if (REPO_OVERRIDE && REPO_OVERRIDE.indexOf('/') > 0) { var p = REPO_OVERRIDE.split('/'); return { owner: p[0], repo: p[1] }; }
+  var h = location.hostname, parts = location.pathname.split('/').filter(Boolean);
+  if (/\.github\.io$/.test(h)) { var owner = h.replace(/\.github\.io$/, ''); return { owner: owner, repo: parts[0] || (owner + '.github.io') }; }
+  return null;
+}
+function checkCode(n, s) {                 // speed bump against casual edits; the Action recomputes it
+  var str = n + ':' + s + ':crimecity', h = 0x811c9dc5;
+  for (var i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return ('00000000' + h.toString(16)).slice(-8);
+}
+function sortTable(a) { return a.map(function (e, i) { return { n: e.n, s: e.s, i: i }; }).sort(function (x, y) { return (y.s - x.s) || (x.i - y.i); }); }
+async function fetchJson(url) {
+  var r = await withTimeout(fetch(url, { cache: 'no-store' }), 6000);
+  if (!r.ok) throw new Error('http ' + r.status);
+  return r.json();
+}
+async function fetchCentral() {
+  var bust = '?t=' + Math.floor(Date.now() / 60000), urls = [new URL('data/scores.json', location.href).href + bust], ri = repoInfo(), i, j;
+  if (ri) urls.push('https://raw.githubusercontent.com/' + ri.owner + '/' + ri.repo + '/main/docs/data/scores.json' + bust);
+  for (i = 0; i < urls.length; i++) {
+    try { j = await fetchJson(urls[i]); if (j && Array.isArray(j.entries)) return j.entries.filter(validEntry); } catch (e) { /* try next */ }
+  }
+  throw new Error('no scores file');
+}
+async function fetchTable() {
+  var central = [];
+  try { central = await fetchCentral(); connState = 'online'; } catch (e) { connState = 'offline'; }
+  var pend = loadPending().filter(function (p) { return !central.some(function (c) { return c.n === p.n && c.s === p.s; }); });
+  savePending(pend);
+  var all = central.map(function (e) { return { n: e.n, s: e.s }; }).concat(pend.map(function (p) { return { n: p.n, s: p.s }; })).concat(DEFAULTS);
+  return sortTable(all).slice(0, 5).map(function (e) { return { n: e.n, s: e.s }; });
+}
+function sameEntry(a, b) { return a.n === b.n && a.s === b.s; }
+function newEntry(cur, prev) {
+  var pool = prev.slice(), added = [];
+  cur.forEach(function (e) { var k = pool.findIndex(function (p) { return sameEntry(p, e); }); if (k >= 0) pool.splice(k, 1); else added.push(e); });
+  added.sort(function (a, b) { return b.s - a.s; });
+  return added[0] || null;
+}
+async function syncTitle() {
+  var t = await fetchTable(); writeTable(t); lastTable = t; paintSource(); showSubmit();
+}
+async function syncAfterName() {
+  var cur = readTable(), add = lastTable ? newEntry(cur, lastTable) : null;
+  if (add) { var p = loadPending(); p.push({ n: add.n, s: add.s, t: Date.now() }); savePending(p); }
+  var t = await fetchTable(); writeTable(t); lastTable = t; paintSource(); showSubmit();
+}
+var dotEl = document.getElementById('dot'), srcEl = document.getElementById('srcText');
+function paintSource() {
+  var map = {
+    init: ['', 'High scores: loading\u2026'],
+    online: ['online', 'High scores: shared table, refreshed at the title screen'],
+    offline: ['offline', 'High scores: shared table unavailable, showing your own scores']
+  };
+  var m = map[connState] || map.init; dotEl.className = 'dot ' + m[0]; srcEl.textContent = m[1];
+}
+var boxEl = document.getElementById('submitBox'), boxText = document.getElementById('submitText'), boxLink = document.getElementById('submitLink'), boxDiscard = document.getElementById('submitDiscard');
+function issueUrl(e) {
+  var ri = repoInfo(); if (!ri) return null;
+  return 'https://github.com/' + ri.owner + '/' + ri.repo + '/issues/new?template=score.yml'
+    + '&title=' + encodeURIComponent('[score] ' + e.n + ' ' + e.s) + '&initials=' + e.n + '&score=' + e.s + '&check=' + checkCode(e.n, e.s);
+}
+function showSubmit() {
+  var p = loadPending();
+  if (!p.length) { boxEl.hidden = true; return; }
+  p.sort(function (a, b) { return b.s - a.s; });
+  var e = p[0], url = issueUrl(e);
+  boxText.textContent = 'Your score ' + e.n + ' ' + e.s + ' is only on this device so far.' + (p.length > 1 ? ' (' + (p.length - 1) + ' more waiting.)' : '');
+  if (url) { boxLink.href = url; boxLink.removeAttribute('aria-disabled'); } else { boxLink.href = '#'; boxLink.setAttribute('aria-disabled', 'true'); }
+  boxEl.hidden = false;
+}
+boxDiscard.addEventListener('click', function () {
+  var p = loadPending().sort(function (a, b) { return b.s - a.s; }); p.shift(); savePending(p); showSubmit();
+});
+
+/* ---------------------------------------------------------------- display */
+var canvas = document.getElementById('scr'), ctx = canvas.getContext('2d');
+var img = ctx.createImageData(256, 192), px = new Uint32Array(img.data.buffer);
+var PAPER = 0xFFECF3F4, INK = 0xFF121212;      // ABGR: warm white, soft black
+var prev = new Int16Array(768).fill(-1), dirty = true;
+function drawCell(cx, cy, code) {
+  var g = glyph(code), x, y, base = cy * 8 * 256 + cx * 8;
+  for (y = 0; y < 8; y++) for (x = 0; x < 8; x++) px[base + y * 256 + x] = g[y * 8 + x] ? INK : PAPER;
+}
+function render() {
+  var df = mem[0x400C] | (mem[0x400D] << 8), r, c, code;
+  for (r = 0; r < 24; r++) for (c = 0; c < 32; c++) {
+    code = mem[(df + 1 + 33 * r + c) & 0xFFFF];
+    if (code !== prev[r * 32 + c]) { prev[r * 32 + c] = code; drawCell(c, r, code); dirty = true; }
+  }
+  if (dirty) { ctx.putImageData(img, 0, 0); dirty = false; }
+}
+function tapeStripes() {
+  var y = 0, on = Math.random() < 0.5, h, x;
+  while (y < 192) {
+    h = 1 + Math.floor(Math.random() * (Math.random() < 0.3 ? 28 : 6));
+    for (var k = 0; k < h && y < 192; k++, y++) for (x = 0; x < 256; x++) px[y * 256 + x] = on ? INK : PAPER;
+    on = !on;
+  }
+  ctx.putImageData(img, 0, 0); prev.fill(-1); dirty = true;
+}
+
+/* ---------------------------------------------------------------- run loop */
+var state = 'loading', loadUntil = 0, hookBusy = false, skipPc = -1, exited = false;
+var FRAME_T = 65000;
+function showBasicReport() {
+  var df = mem[0x400C] | (mem[0x400D] << 8), b = df + 1 + 33 * 23;
+  mem[b] = 28; mem[b + 1] = 24; mem[b + 2] = 30;       // "0/2"
+}
+async function doHook(pc) {
+  hookBusy = true;
+  try { await withTimeout(pc === SYM.title ? syncTitle() : syncAfterName(), 12000); } catch (e) { /* resume anyway */ }
+  hookBusy = false; skipPc = pc;
+}
+function runFrame() {
+  if (hookBusy || exited) return;
+  var f = (mem[0x4034] | (mem[0x4035] << 8));
+  f = (f - 1) & 0xFFFF; mem[0x4034] = f & 255; mem[0x4035] = f >> 8;
+  var budget = FRAME_T;
+  while (budget > 0) {
+    var pc = cpu.pc;
+    if (pc === SYM.title || pc === SYM.go2) {
+      if (skipPc === pc) skipPc = -1; else { doHook(pc); return; }
+    }
+    if (pc === 0x7000) { exited = true; showBasicReport(); return; }
+    budget -= cpu.step();
+  }
+}
+function boot() {
+  loadMachine(); exited = false; hookBusy = false; skipPc = -1; lastTable = null;
+  if (!DEFAULTS) DEFAULTS = readTable();
+  state = 'loading'; loadUntil = performance.now() + 2200; prev.fill(-1);
+}
+var last = performance.now(), acc = 0, tapeAcc = 0;
+function frame(now) {
+  var dt = Math.min(now - last, 100); last = now; acc += dt;
+  if (state === 'loading') {
+    tapeAcc += dt; if (tapeAcc > 45) { tapeAcc = 0; tapeStripes(); acc = 0; }
+    if (now >= loadUntil) { state = 'run'; acc = 0; }
+  } else {
+    while (acc >= 20) { acc -= 20; runFrame(); }
+    render();
+  }
+  requestAnimationFrame(frame);
+}
+
+/* ---------------------------------------------------------------- keyboard */
+var CODEMAP = { Space: 'SPACE', Enter: 'ENTER', NumpadEnter: 'ENTER', ShiftLeft: 'SHIFT', ShiftRight: 'SHIFT', Period: '.', NumpadDecimal: '.',
+  ArrowLeft: '5', ArrowDown: '6', ArrowUp: '7', ArrowRight: '8' };
+function keyName(e) {
+  var c = e.code || '';
+  if (CODEMAP[c]) return CODEMAP[c];
+  if (/^Key[A-Z]$/.test(c)) return c.charAt(3);
+  if (/^Digit[0-9]$/.test(c)) return c.charAt(5);
+  if (/^Numpad[0-9]$/.test(c)) return c.charAt(6);
+  return null;
+}
+function skipLoad() { if (state === 'loading') { loadUntil = 0; } }
+window.addEventListener('keydown', function (e) {
+  var k = keyName(e); if (!k || e.ctrlKey || e.metaKey || e.altKey) return;
+  e.preventDefault(); skipLoad(); pressedPhys[k] = true; markKey(k, true);
+});
+window.addEventListener('keyup', function (e) { var k = keyName(e); if (!k) return; e.preventDefault(); delete pressedPhys[k]; markKey(k, false); });
+window.addEventListener('blur', function () { pressedPhys = {}; pressedVirt = {}; document.querySelectorAll('.key.dn').forEach(function (n) { n.classList.remove('dn'); }); });
+var keyEls = {};
+function markKey(k, on) { var el = keyEls[k]; if (el) el.classList.toggle('dn', on); }
+var KB = [['1','2','3','4','5','6','7','8','9','0'], ['Q','W','E','R','T','Y','U','I','O','P'], ['A','S','D','F','G','H','J','K','L','ENTER'], ['SHIFT','Z','X','C','V','B','N','M','.','SPACE']];
+var CAPS = { '5': '\u2190', '6': '\u2193', '7': '\u2191', '8': '\u2192', '0': 'STOP', 'E': 'EXIT', 'Q': 'QUIT' };
+var kbEl = document.getElementById('kb');
+KB.forEach(function (row) {
+  var rEl = document.createElement('div'); rEl.className = 'row';
+  row.forEach(function (k) {
+    var b = document.createElement('button'); b.type = 'button'; b.className = 'key' + (k.length > 1 ? ' wide' : '');
+    b.setAttribute('aria-label', k === 'ENTER' ? 'New line' : k.toLowerCase() === k ? k : k);
+    b.innerHTML = '<span></span><small></small>'; b.firstChild.textContent = k === 'ENTER' ? 'NEW LINE' : k; b.lastChild.textContent = CAPS[k] || '';
+    keyEls[k] = b;
+    b.addEventListener('pointerdown', function (e) { e.preventDefault(); skipLoad(); pressedVirt[k] = true; b.classList.add('dn'); try { b.setPointerCapture(e.pointerId); } catch (x) {} });
+    var up = function () { delete pressedVirt[k]; if (!pressedPhys[k]) b.classList.remove('dn'); };
+    b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up); b.addEventListener('lostpointercapture', up);
+    rEl.appendChild(b);
+  });
+  kbEl.appendChild(rEl);
+});
+document.getElementById('reset').addEventListener('click', function () { boot(); });
+canvas.addEventListener('pointerdown', skipLoad);
+
+window.__crimecity = { checkCode: checkCode, issueUrl: issueUrl, mem: mem, cpu: cpu, SYM: SYM, boot: boot, getState: function () { return { state: state, exited: exited, connState: connState }; } };
+paintSource(); boot();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
