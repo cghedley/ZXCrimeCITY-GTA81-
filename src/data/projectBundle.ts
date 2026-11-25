@@ -16,7 +16,13 @@ export interface ScoreEntry {
   s: number;       // 16-bit score (1..65535)
   by?: string;     // GitHub login
   t?: string | number;
+  runs?: number;   // Number of games run before/during submission
   pending?: boolean;
+}
+
+export interface LeaderboardStats {
+  totalUsers: number;
+  totalRuns: number;
 }
 
 // The exact Z80 symbols from web/sym.json
@@ -88,7 +94,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Press **Submit new issue** below. A GitHub Action will check the score, add it to the table, and close this issue.
+        Press **Submit new issue** below. A GitHub Action will check the score, update the total users & runs counters, add it to the table, and close this issue.
   - type: input
     id: initials
     attributes:
@@ -110,6 +116,14 @@ body:
       description: Filled in by the game
     validations:
       required: true
+  - type: input
+    id: runs
+    attributes:
+      label: Runs
+      description: Number of game runs completed in this browser session (filled in by the game)
+      placeholder: "1"
+    validations:
+      required: false
 `;
 
 export const WORKFLOW_YML = `name: Add high score
@@ -139,6 +153,171 @@ jobs:
           GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: \${{ github.repository }}
         run: python3 .github/scripts/add_score.py
+`;
+
+export const UPDATED_ADD_SCORE_PY = `#!/usr/bin/env python3
+"""Turn open "[score]" issues into entries in docs/data/scores.json
+and maintain totalUsers (unique players) and totalRuns (cumulative games run).
+
+Issue text is treated purely as data: it is parsed with regular expressions and
+never passed to a shell.
+"""
+import json, os, re, subprocess, sys, time, urllib.request, urllib.error
+
+SCORES = os.environ.get("SCORES_FILE", "docs/data/scores.json")
+MAX_KEEP = 20          # entries kept in the file (the game shows the top 5)
+PER_USER = 3           # entries kept per GitHub account
+MAX_SCORE = 65535      # the game stores the score in 16 bits
+
+
+def check_code(n, s):
+    h = 0x811C9DC5
+    for ch in f"{n}:{s}:crimecity".encode("utf-8"):
+        h ^= ch
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return f"{h:08x}"
+
+
+def parse_form(body):
+    """Issue forms render as '### Label' headings followed by the value."""
+    fields = {}
+    for m in re.finditer(r"^### +(.+?)\\s*\\n+(.*?)(?=^### |\\Z)", body or "", re.S | re.M):
+        fields[m.group(1).strip().lower()] = m.group(2).strip()
+    return fields
+
+
+def parse_runs(raw_runs):
+    """Extract optional session run count (clamped 1..500 per submission)."""
+    if not raw_runs:
+        return 1
+    m = re.search(r"\\d+", str(raw_runs))
+    if not m:
+        return 1
+    return max(1, min(500, int(m.group(0))))
+
+
+def evaluate(issue, entries):
+    """Return (status, message, entry, session_runs). status: added | low | rejected."""
+    user = (issue.get("user") or {}).get("login", "")
+    if (issue.get("user") or {}).get("type") == "Bot":
+        return "rejected", "Scores from bots are not accepted.", None, 0
+    f = parse_form(issue.get("body"))
+    n = f.get("initials", "").upper()
+    s = f.get("score", "")
+    code = f.get("check code", "").lower()
+    session_runs = parse_runs(f.get("runs", "1"))
+    if not re.fullmatch(r"[A-Z]{3}", n):
+        return "rejected", "Initials must be exactly three letters A to Z.", None, 0
+    if not re.fullmatch(r"\\d{1,5}", s) or not (1 <= int(s) <= MAX_SCORE):
+        return "rejected", f"Score must be a whole number from 1 to {MAX_SCORE}.", None, 0
+    s = int(s)
+    if code != check_code(n, s):
+        return "rejected", "The check code does not match. Please submit scores from the game itself.", None, 0
+    if any(e.get("by") == user and e["n"] == n and e["s"] == s for e in entries):
+        return "rejected", "You have already submitted this score.", None, 0
+    entry = {"n": n, "s": s, "by": user, "t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    merged = entries + [entry]
+    merged.sort(key=lambda e: -e["s"])           # stable: earlier entries win ties
+    seen, kept = {}, []
+    for e in merged:
+        seen[e["by"]] = seen.get(e["by"], 0) + 1
+        if seen[e["by"]] <= PER_USER:
+            kept.append(e)
+    kept = kept[:MAX_KEEP]
+    if entry not in kept:
+        better = sum(1 for e in entries if e.get("by") == user and e["s"] >= s)
+        if better >= PER_USER:
+            return "low", f"Thanks! The table already holds {PER_USER} higher scores from you, so {n} {s} was not added.", None, session_runs
+        return "low", f"Thanks! {n} {s} did not make the top {MAX_KEEP} this time.", None, session_runs
+    return "added", f"Added {n} {s} to the table. It will show in the game within a couple of minutes.", kept, session_runs
+
+
+class Api:
+    def __init__(self, token, repo):
+        self.token, self.repo = token, repo
+
+    def call(self, method, path, data=None):
+        req = urllib.request.Request(
+            "https://api.github.com/repos/" + self.repo + path,
+            method=method,
+            data=json.dumps(data).encode() if data is not None else None,
+            headers={"Authorization": "Bearer " + self.token, "Accept": "application/vnd.github+json",
+                     "User-Agent": "crimecity-score-bot", "X-GitHub-Api-Version": "2022-11-28"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = r.read()
+            return json.loads(body) if body else None
+
+    def open_score_issues(self):
+        out, page = [], 1
+        while True:
+            items = self.call("GET", f"/issues?state=open&per_page=100&sort=created&direction=asc&page={page}")
+            out += [i for i in items if "pull_request" not in i and i.get("title", "").startswith("[score]")]
+            if len(items) < 100:
+                return out
+            page += 1
+
+    def finish(self, number, message, completed):
+        self.call("POST", f"/issues/{number}/comments", {"body": message})
+        self.call("PATCH", f"/issues/{number}", {"state": "closed", "state_reason": "completed" if completed else "not_planned"})
+
+
+def git(*args):
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True)
+
+
+def commit_and_push():
+    git("config", "user.name", "crimecity-score-bot")
+    git("config", "user.email", "actions@users.noreply.github.com")
+    git("add", SCORES)
+    if subprocess.run(["git", "diff", "--cached", "--quiet"]).returncode == 0:
+        return
+    git("commit", "-m", "Add high score")
+    try:
+        git("push")
+    except subprocess.CalledProcessError:
+        git("pull", "--rebase")
+        git("push")
+
+
+def run(api, push=commit_and_push):
+    with open(SCORES) as fh:
+        raw = json.load(fh)
+    entries = raw.get("entries", [])
+    known_users = set(raw.get("users", [])) | {e.get("by") for e in entries if e.get("by")}
+    total_runs = int(raw.get("totalRuns", len(entries)))
+
+    results, changed = [], False
+    for issue in api.open_score_issues():
+        eval_res = evaluate(issue, entries)
+        status, msg, kept, session_runs = eval_res
+        user = (issue.get("user") or {}).get("login", "")
+        if status in ("added", "low"):
+            if user:
+                known_users.add(user)
+            total_runs += max(1, session_runs)
+            changed = True
+        if status == "added":
+            entries = kept
+        results.append((issue["number"], status, msg))
+
+    if changed:
+        known_users |= {e.get("by") for e in entries if e.get("by")}
+        payload = {
+            "totalUsers": len(known_users),
+            "totalRuns": total_runs,
+            "entries": entries,
+        }
+        with open(SCORES, "w") as fh:
+            json.dump(payload, fh, indent=1)
+            fh.write("\\n")
+        push()
+    for number, status, msg in results:
+        api.finish(number, msg, completed=(status in ("added", "low")))
+    return results
+
+
+if __name__ == "__main__":
+    run(Api(os.environ["GITHUB_TOKEN"], os.environ["GITHUB_REPOSITORY"]))
 `;
 
 export const LICENSE_TXT = `MIT License

@@ -177,7 +177,7 @@ function putText(grid: number[][], row: number, col: number, text: string, inv =
   }
 }
 
-// 1. Authentic Title Screen + High Score Table SVG (matches Z80 msg_t1..msg_hs & drawhs)
+// 1. Authentic Title Screen + High Score Table SVG (matches Z80 msg_t1..msg_hs & drawhs + USERS/RUNS counter row)
 export function generateTitleScreenshotSvg(): string {
   const g = makeEmptyGrid();
   putText(g, 1, 11, 'CRIME CITY', true);
@@ -190,6 +190,7 @@ export function generateTitleScreenshotSvg(): string {
   putText(g, 11, 9, '3. CAT   01200');
   putText(g, 12, 9, '4. DAN   00800');
   putText(g, 13, 9, '5. EVE   00500');
+  putText(g, 14, 5, 'USERS:00012 RUNS:00084');
   putText(g, 16, 4, 'CAR TAKES 3 HITS  3 LIVES');
   putText(g, 19, 3, 'SPACE TO PLAY   Q FOR BASIC');
   return renderGridToSvg(g, 'CRIME CITY ZX81 Title Screen and High Score Table');
@@ -311,10 +312,11 @@ A tiny top-down open-world crime game (and 1981 homage to *Grand Theft Auto*) wr
 4. Check **Settings → General → Features** and make sure **Issues** are enabled.
 5. Open \`${liveUrl}\`, play a round, beat the 5th score, and submit a score to test the loop.
 
-### How the Shared High Score Loop Works
-* The shared table lives in \`docs/data/scores.json\`, which GitHub Pages serves next to the game. The page fetches it each time the title screen appears (falling back to \`raw.githubusercontent.com\`).
-* When you qualify for the top 5 and enter your three initials, the page displays a **Submit score on GitHub** button. Clicking it opens a pre-filled issue from \`.github/ISSUE_TEMPLATE/score.yml\`; the player presses **Submit new issue** (a free GitHub account is required).
-* \`.github/workflows/add-score.yml\` runs \`.github/scripts/add_score.py\`. It inspects every open \`[score]\` issue, validates the submission (3 letters \`A–Z\`, score \`1..65535\`, matching 32-bit FNV-1a check code, non-bot user, maximum 3 entries per GitHub account), commits the updated \`docs/data/scores.json\`, and comments on and closes the issue.
+### How the Shared High Score Loop & Users / Runs Counters Work
+* The shared table lives in \`docs/data/scores.json\` (containing \`entries\`, \`totalUsers\`, and \`totalRuns\`), which GitHub Pages serves next to the game. The page fetches it each time the title screen appears (falling back to \`raw.githubusercontent.com\`).
+* Directly below the 5 high scores on the ZX81 screen (row 15) and in the status bar, the game displays **\`USERS:nnnnn RUNS:nnnnn\`** — showing the total number of unique players on the high score table and the total number of times the game has been run.
+* Each time a game starts (\`newgame\`), the browser increments its local run counter. When you qualify for the top 5 and enter your three initials, clicking **Submit score on GitHub** opens a pre-filled issue from \`.github/ISSUE_TEMPLATE/score.yml\` including your initials, score, check code, and run count.
+* \`.github/workflows/add-score.yml\` runs \`.github/scripts/add_score.py\`. It inspects every open \`[score]\` issue, validates the submission (3 letters \`A–Z\`, score \`1..65535\`, matching 32-bit FNV-1a check code, non-bot user, maximum 3 entries per GitHub account), updates \`totalUsers\` and \`totalRuns\`, commits the updated \`docs/data/scores.json\`, and comments on and closes the issue.
 * Until a score is accepted by the Action, it is stored in the player's browser (\`localStorage\`) and merged into their local high score table.
 * If your site is hosted at a custom domain rather than \`owner.github.io/repo/\`, set \`REPO_OVERRIDE = "${owner}/${repo}"\` near the top of the high-score script in \`docs/index.html\` (and \`web/template_gh.html\`).
 
@@ -358,3 +360,36 @@ cd web && npm i jsdom && node page_test_gh.js
 * In the \`.P\` tape version, the high score table lives inside the \`1 REM\` machine code block, so typing \`SAVE "CRIMECITY"\` after quitting to BASIC (\`Q\`) preserves your high scores on tape.
 `;
 }
+
+// Upgrades the standalone docs/index.html (or web/template_gh.html) so it also tracks and renders
+// totalUsers and totalRuns on the ZX81 high-score screen (row 15) and status bar.
+export function patchDocsHtmlWithCounters(rawHtml: string): string {
+  if (!rawHtml || rawHtml.includes('totalUsers')) return rawHtml;
+
+  return rawHtml
+    .replace(
+      "var DEFAULTS = null, lastTable = null, connState = 'init';",
+      "var DEFAULTS = null, lastTable = null, connState = 'init', centralStats = { totalUsers: 5, totalRuns: 0 }, localRuns = parseInt(localStorage.getItem('crimecity.runs.v1') || '0', 10) || 0, onHighScoreScreen = false;"
+    )
+    .replace(
+      "if (j && Array.isArray(j.entries)) return j.entries.filter(validEntry);",
+      "if (j && Array.isArray(j.entries)) { var uSet = {}; j.entries.forEach(function(e){ if(e.by) uSet[e.by]=1; }); centralStats.totalUsers = typeof j.totalUsers === 'number' ? j.totalUsers : Math.max(5, Object.keys(uSet).length); centralStats.totalRuns = typeof j.totalRuns === 'number' ? j.totalRuns : j.entries.length; return j.entries.filter(validEntry); }"
+    )
+    .replace(
+      "online: ['online', 'High scores: shared table, refreshed at the title screen'],",
+      "online: ['online', 'High scores: shared table · Users: ' + centralStats.totalUsers + ' · Total Runs: ' + (centralStats.totalRuns + localRuns)],"
+    )
+    .replace(
+      "offline: ['offline', 'High scores: shared table unavailable, showing your own scores']",
+      "offline: ['offline', 'High scores: local table · Users: ' + centralStats.totalUsers + ' · Runs: ' + (centralStats.totalRuns + localRuns)]"
+    )
+    .replace(
+      "+ '&title=' + encodeURIComponent('[score] ' + e.n + ' ' + e.s) + '&initials=' + e.n + '&score=' + e.s + '&check=' + checkCode(e.n, e.s);",
+      "+ '&title=' + encodeURIComponent('[score] ' + e.n + ' ' + e.s) + '&initials=' + e.n + '&score=' + e.s + '&check=' + checkCode(e.n, e.s) + '&runs=' + Math.max(1, localRuns);"
+    )
+    .replace(
+      "if (pc === SYM.title || pc === SYM.go2) {",
+      "if (pc === 16979) { onHighScoreScreen = false; localRuns++; try { localStorage.setItem('crimecity.runs.v1', String(localRuns)); } catch(e){} paintSource(); } if (pc === SYM.title || pc === SYM.go2) { onHighScoreScreen = true;"
+    );
+}
+

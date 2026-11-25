@@ -2,5 +2,7 @@
   "name": "Crime City ZX81",
   "description": "A Sinclair ZX81 (16K) demake homage to GTA6 running in a browser emulator with a GitHub Pages deployment and shared high-score bundle generator.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

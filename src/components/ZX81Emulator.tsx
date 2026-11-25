@@ -6,6 +6,9 @@ import { SYM, PB64, ScoreEntry, computeCheckCode } from '../data/projectBundle';
 interface ZX81EmulatorProps {
   centralScores: ScoreEntry[];
   pendingScores: ScoreEntry[];
+  totalUsers: number;
+  totalRuns: number;
+  onIncrementRuns: () => void;
   onAddPendingScore: (entry: ScoreEntry) => void;
   onDiscardTopPending: () => void;
   repoOwner: string;
@@ -135,6 +138,12 @@ function glyph(code: number): Uint8Array {
   return b;
 }
 
+function asciiToZX81Code(ch: string): number {
+  if (ch === ' ') return 0;
+  const idx = CHARS.indexOf(ch.toUpperCase());
+  return idx >= 0 ? idx + 11 : 0;
+}
+
 const ROWS_MATRIX = [
   ['SHIFT', 'Z', 'X', 'C', 'V'],
   ['A', 'S', 'D', 'F', 'G'],
@@ -182,6 +191,9 @@ const PBYTES = Uint8Array.from(atob(PB64), (c) => c.charCodeAt(0));
 export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
   centralScores,
   pendingScores,
+  totalUsers,
+  totalRuns,
+  onIncrementRuns,
   onAddPendingScore,
   onDiscardTopPending,
   repoOwner,
@@ -205,10 +217,13 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
     exited: false,
   });
 
-  // Latest scores refs so the Z80 PC hook always sees current leaderboard
+  // Latest scores and counters refs so the Z80 PC hook always sees current leaderboard & stats
   const centralRef = useRef<ScoreEntry[]>(centralScores);
   const pendingRef = useRef<ScoreEntry[]>(pendingScores);
+  const totalUsersRef = useRef<number>(totalUsers);
+  const totalRunsRef = useRef<number>(totalRuns);
   const onAddPendingRef = useRef(onAddPendingScore);
+  const onIncrementRunsRef = useRef(onIncrementRuns);
 
   useEffect(() => {
     centralRef.current = centralScores;
@@ -219,8 +234,20 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
   }, [pendingScores]);
 
   useEffect(() => {
+    totalUsersRef.current = totalUsers;
+  }, [totalUsers]);
+
+  useEffect(() => {
+    totalRunsRef.current = totalRuns;
+  }, [totalRuns]);
+
+  useEffect(() => {
     onAddPendingRef.current = onAddPendingScore;
   }, [onAddPendingScore]);
+
+  useEffect(() => {
+    onIncrementRunsRef.current = onIncrementRuns;
+  }, [onIncrementRuns]);
 
   // Machine state ref
   const machineRef = useRef<{
@@ -234,6 +261,7 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
     loadUntil: number;
     skipPc: number;
     exited: boolean;
+    onHighScoreScreen: boolean;
     prevCells: Int16Array;
     dirty: boolean;
   } | null>(null);
@@ -263,6 +291,25 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
       mem[b + 4] = (e.s >> 8) & 255;
     }
   };
+
+  // Writes "     USERS:00005 RUNS:00012     " directly to Row 15 of the ZX81 Display File
+  // whenever the high score table is being displayed on screen!
+  const writeCountersToDisplayFile = useCallback((mem: Uint8Array) => {
+    const df = mem[0x400c] | (mem[0x400d] << 8);
+    if (!df) return;
+    // Check if 'HIGH SCORES' header is present on row 8 (col 11 = 'H' = 45)
+    const headerRow = df + 1 + 33 * 8;
+    const isShowingHighScores = mem[headerRow + 11] === 45 && mem[headerRow + 12] === 46;
+    if (!isShowingHighScores) return;
+
+    const uStr = String(Math.min(99999, Math.max(0, totalUsersRef.current))).padStart(5, '0');
+    const rStr = String(Math.min(99999, Math.max(0, totalRunsRef.current))).padStart(5, '0');
+    const line = `     USERS:${uStr} RUNS:${rStr}     `;
+    const row15Base = df + 1 + 33 * 15;
+    for (let c = 0; c < 32; c++) {
+      mem[row15Base + c] = asciiToZX81Code(line[c] || ' ');
+    }
+  }, []);
 
   const computeMergedTop5 = useCallback((defaults: ScoreEntry[]): ScoreEntry[] => {
     const all = [
@@ -294,6 +341,7 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
       m.defaults = readTableFromMem(m.mem);
     }
     m.exited = false;
+    m.onHighScoreScreen = true;
     m.skipPc = -1;
     m.lastTable = null;
     m.state = 'loading';
@@ -344,6 +392,7 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
       loadUntil: 0,
       skipPc: -1,
       exited: false,
+      onHighScoreScreen: true,
       prevCells: new Int16Array(768).fill(-1),
       dirty: true,
     };
@@ -373,6 +422,9 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
     const renderScreen = () => {
       const m = machineRef.current;
       if (!m) return;
+      if (m.onHighScoreScreen) {
+        writeCountersToDisplayFile(m.mem);
+      }
       const df = m.mem[0x400c] | (m.mem[0x400d] << 8);
       for (let r = 0; r < 24; r++) {
         for (let c = 0; c < 32; c++) {
@@ -423,10 +475,15 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
       const m = machineRef.current;
       if (!m) return;
       if (pc === SYM.title) {
+        m.onHighScoreScreen = true;
         const top5 = computeMergedTop5(m.defaults);
         writeTableToMem(m.mem, top5);
         m.lastTable = top5;
+      } else if (pc === SYM.newgame) {
+        m.onHighScoreScreen = false;
+        onIncrementRunsRef.current();
       } else if (pc === SYM.go2) {
+        m.onHighScoreScreen = true;
         const cur = readTableFromMem(m.mem);
         if (m.lastTable) {
           const pool = m.lastTable.slice();
@@ -465,7 +522,7 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
       let budget = FRAME_T;
       while (budget > 0) {
         const pc = m.cpu.pc;
-        if (pc === SYM.title || pc === SYM.go2) {
+        if (pc === SYM.title || pc === SYM.go2 || pc === SYM.newgame) {
           if (m.skipPc === pc) {
             m.skipPc = -1;
           } else {
@@ -532,16 +589,19 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
 
     animId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animId);
-  }, [bootMachine, computeMergedTop5]);
+  }, [bootMachine, computeMergedTop5, writeCountersToDisplayFile]);
 
-  // Update ZX81 memory high-score table live whenever centralScores or pendingScores change
+  // Update ZX81 memory high-score table live whenever centralScores, pendingScores, or counters change
   useEffect(() => {
     const m = machineRef.current;
     if (!m || m.defaults.length === 0) return;
     const top5 = computeMergedTop5(m.defaults);
     writeTableToMem(m.mem, top5);
     m.lastTable = top5;
-  }, [centralScores, pendingScores, computeMergedTop5]);
+    if (m.onHighScoreScreen) {
+      writeCountersToDisplayFile(m.mem);
+    }
+  }, [centralScores, pendingScores, totalUsers, totalRuns, computeMergedTop5, writeCountersToDisplayFile]);
 
   // Physical Keyboard Handling
   useEffect(() => {
@@ -635,7 +695,7 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
       )}&initials=${topPending.n}&score=${topPending.s}&check=${computeCheckCode(
         topPending.n,
         topPending.s
-      )}`
+      )}&runs=${Math.max(1, totalRuns)}`
     : '#';
 
   return (
@@ -649,7 +709,7 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
               CRIME CITY — REAL Z80 MACHINE CODE ($4082)
             </div>
             <div className="text-xs font-mono text-zinc-400">
-              32×24 CHARACTERS · 256×192 ULA DISPLAY · 40-KEY ZX81 KEYBOARD
+              32×24 CHARACTERS · USERS: {totalUsers} · TOTAL RUNS: {totalRuns}
             </div>
           </div>
 
@@ -681,8 +741,12 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
 
         {/* Live Z80 RAM Status Bar ($4034 FRAMES & SYM Addresses) */}
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-zinc-400">
-          <div>
-            <span>High scores: shared table, refreshed at the title screen</span>
+          <div className="tabular-nums">
+            <span>High scores: shared table</span>
+            <span className="mx-2">·</span>
+            <span className="text-zinc-200">USERS: {totalUsers}</span>
+            <span className="mx-2">·</span>
+            <span className="text-zinc-200">RUNS: {totalRuns}</span>
           </div>
           <div className="text-zinc-300 tabular-nums">
             <span>SCORE: ${telemetry.score}</span>
@@ -747,7 +811,7 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
             is only on this device so far.
             {pendingScores.length > 1 ? ` (${pendingScores.length - 1} more waiting.)` : ''}{' '}
             <span className="font-mono text-xs text-amber-400">
-              (check={computeCheckCode(topPending.n, topPending.s)})
+              (check={computeCheckCode(topPending.n, topPending.s)} · runs={totalRuns})
             </span>
           </div>
           <div className="flex items-center gap-3 shrink-0">
@@ -783,7 +847,7 @@ export const ZX81Emulator: React.FC<ZX81EmulatorProps> = ({
           <strong className="text-zinc-200">0</strong> stops, <strong className="text-zinc-200">E</strong> leaves your car. Walk into a traffic car (<strong className="text-zinc-200">H</strong>) to steal it. Run over pedestrians (<strong className="text-zinc-200">I</strong>) for cash, but the police (inverse <strong className="text-zinc-200">Z</strong>) will chase you. On foot, they bust you. In a car, they dent it.
         </p>
         <p className="text-zinc-400 leading-relaxed">
-          Drive to the <strong className="text-zinc-200">$</strong> to pick up a fare, then to the <strong className="text-zinc-200">X</strong> before the timer runs out. Three lives. At the title screen press <strong className="text-zinc-200">Q</strong> to drop back to BASIC. When you beat the 5th high score, type 3 initials on the keyboard to unlock the <strong className="text-zinc-200">Submit score on GitHub</strong> button.
+          Drive to the <strong className="text-zinc-200">$</strong> to pick up a fare, then to the <strong className="text-zinc-200">X</strong> before the timer runs out. Three lives. At the title screen press <strong className="text-zinc-200">Q</strong> to drop back to BASIC. The high score table now tracks and displays <strong className="text-zinc-200">USERS</strong> (total unique players) and <strong className="text-zinc-200">RUNS</strong> (total times the game has been run).
         </p>
       </div>
     </div>

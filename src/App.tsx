@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import JSZip from 'jszip';
 import {
   Download,
@@ -13,6 +13,8 @@ import {
   ExternalLink,
   AlertTriangle,
   Image as ImageIcon,
+  Users,
+  Activity,
 } from 'lucide-react';
 import {
   ScoreEntry,
@@ -20,6 +22,7 @@ import {
   PB64,
   ISSUE_TEMPLATE_YML,
   WORKFLOW_YML,
+  UPDATED_ADD_SCORE_PY,
   LICENSE_TXT,
   computeCheckCode,
 } from './data/projectBundle';
@@ -28,10 +31,11 @@ import {
   generateGameplayScreenshotSvg,
   generateHighscoreScreenshotSvg,
   generateFormattedReadme,
+  patchDocsHtmlWithCounters,
 } from './data/readmeAssets';
 import { ZX81Emulator } from './components/ZX81Emulator';
 
-type WorkspaceTab = 'README' | 'AUDIT' | 'FILES' | 'SCORES';
+type WorkspaceTab = 'SCORES' | 'README' | 'AUDIT' | 'FILES';
 
 type RepoFilePath =
   | 'README.md'
@@ -79,6 +83,7 @@ const EXTRA_TEST_ASSETS: Record<string, string> = {
 };
 
 const PENDING_STORAGE_KEY = 'crimecity.pending.v2';
+const RUNS_STORAGE_KEY = 'crimecity.runs.v1';
 
 export default function App() {
   const [repoOwner, setRepoOwner] = useState<string>('c-g-hedley');
@@ -93,8 +98,20 @@ export default function App() {
       return [];
     }
   });
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>('README');
-  const [selectedFile, setSelectedFile] = useState<RepoFilePath>('README.md');
+
+  // Track total number of times the game has been run (persisted in localStorage + synced to scores.json)
+  const [centralRuns, setCentralRuns] = useState<number>(5);
+  const [localSessionRuns, setLocalSessionRuns] = useState<number>(() => {
+    try {
+      const saved = parseInt(localStorage.getItem(RUNS_STORAGE_KEY) || '1', 10);
+      return isNaN(saved) || saved < 1 ? 1 : saved;
+    } catch {
+      return 1;
+    }
+  });
+
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('SCORES');
+  const [selectedFile, setSelectedFile] = useState<RepoFilePath>('docs/data/scores.json');
   const [fileCache, setFileCache] = useState<Record<string, string>>({});
   const [copiedCmd, setCopiedCmd] = useState<boolean>(false);
   const [copiedFile, setCopiedFile] = useState<boolean>(false);
@@ -104,6 +121,7 @@ export default function App() {
   // Interactive check-code & add_score.py simulator
   const [testInitials, setTestInitials] = useState<string>('ABC');
   const [testScore, setTestScore] = useState<number>(3200);
+  const [testUser, setTestUser] = useState<string>('c-g-hedley');
   const [actionSimNotice, setActionSimNotice] = useState<string | null>(null);
 
   const [completedSteps, setCompletedSteps] = useState<Record<number, boolean>>({
@@ -114,6 +132,33 @@ export default function App() {
     5: false,
     6: false,
   });
+
+  // Compute total unique users across ROM defaults, central scores, and local player
+  const totalUsers = useMemo(() => {
+    const uniqueUsers = new Set<string>(['ace-81', 'bob-81', 'cat-81', 'dan-81', 'eve-81']);
+    centralScores.forEach((e) => {
+      if (e.by) uniqueUsers.add(e.by.toLowerCase());
+    });
+    if (pendingScores.length > 0) {
+      uniqueUsers.add((repoOwner || 'local-player').toLowerCase());
+    }
+    return uniqueUsers.size;
+  }, [centralScores, pendingScores, repoOwner]);
+
+  const totalRuns = centralRuns + localSessionRuns;
+
+  // Increment runs every time a new game starts on the ZX81 emulator (SYM.newgame)
+  const handleIncrementRuns = useCallback(() => {
+    setLocalSessionRuns((prev) => {
+      const next = prev + 1;
+      try {
+        localStorage.setItem(RUNS_STORAGE_KEY, String(next));
+      } catch {
+        // ignore storage error
+      }
+      return next;
+    });
+  }, []);
 
   // Memoize the 3 authentic ZX81 SVG screenshots
   const titleSvg = useMemo(() => generateTitleScreenshotSvg(), []);
@@ -157,12 +202,12 @@ export default function App() {
   }, [pendingScores]);
 
   const handleAddPendingScore = (entry: ScoreEntry) => {
-    setPendingScores((prev) => [...prev, entry]);
+    setPendingScores((prev) => [...prev, { ...entry, runs: localSessionRuns }]);
     setTestInitials(entry.n);
     setTestScore(entry.s);
     const code = computeCheckCode(entry.n, entry.s);
     setActionSimNotice(
-      `New high score ${entry.n} ${entry.s} recorded in Z80 RAM (check=${code}). Click "Submit score on GitHub" below the screen or test the Action in tab 4.`
+      `New high score ${entry.n} ${entry.s} recorded in Z80 RAM (check=${code}, Users=${totalUsers}, Runs=${totalRuns}). Click "Submit score on GitHub" below the screen or simulate the Action.`
     );
   };
 
@@ -174,12 +219,12 @@ export default function App() {
     });
   };
 
-  // Exact Python add_score.py evaluation simulation
+  // Exact Python add_score.py evaluation simulation including totalUsers & totalRuns update
   const handleSimulateGitHubAction = () => {
     const cleanInit = testInitials.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3).padEnd(3, 'A');
     const validScore = Math.max(1, Math.min(65535, Math.floor(testScore || 1)));
     const code = computeCheckCode(cleanInit, validScore);
-    const user = repoOwner || 'alice';
+    const user = (testUser || repoOwner || 'alice').trim();
 
     const newEntry: ScoreEntry = {
       n: cleanInit,
@@ -202,13 +247,14 @@ export default function App() {
     }
     const finalKept = kept.slice(0, 20);
     setCentralScores(finalKept);
+    setCentralRuns((r) => r + 1);
 
     setPendingScores((prev) =>
       prev.filter((p) => !finalKept.some((c) => c.n === p.n && c.s === p.s))
     );
 
     setActionSimNotice(
-      `add_score.py accepted [score] ${cleanInit} ${validScore} (check=${code}) → committed to docs/data/scores.json and refreshed Z80 RAM table.`
+      `add_score.py accepted [score] ${cleanInit} ${validScore} by @${user} (check=${code}) → incremented Total Users & Total Runs in docs/data/scores.json and updated ZX81 screen row 15.`
     );
   };
 
@@ -219,11 +265,20 @@ export default function App() {
     if (path === 'docs/screenshots/highscore.svg') return highscoreSvg;
     if (path === '.github/workflows/add-score.yml') return WORKFLOW_YML;
     if (path === '.github/ISSUE_TEMPLATE/score.yml') return ISSUE_TEMPLATE_YML;
+    if (path === '.github/scripts/add_score.py') return UPDATED_ADD_SCORE_PY;
     if (path === 'LICENSE') return LICENSE_TXT;
+    if (path === 'docs/index.html') {
+      return patchDocsHtmlWithCounters(fileCache['docs/index.html'] || '');
+    }
+    if (path === 'web/template_gh.html') {
+      return patchDocsHtmlWithCounters(fileCache['web/template_gh.html'] || '');
+    }
     if (path === 'docs/data/scores.json') {
       return (
         JSON.stringify(
           {
+            totalUsers,
+            totalRuns,
             entries: centralScores.map(({ n, s, by, t }) => ({
               n,
               s,
@@ -251,7 +306,7 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  // Assemble the complete, properly structured GitHub repository ZIP including README + SVG screenshots
+  // Assemble the complete, properly structured GitHub repository ZIP including README + SVG screenshots + counters
   const handleDownloadFullRepoZip = async () => {
     setIsExporting(true);
     try {
@@ -268,10 +323,10 @@ export default function App() {
       zip.file('docs/screenshots/gameplay.svg', gameplaySvg);
       zip.file('docs/screenshots/highscore.svg', highscoreSvg);
 
-      // 3. GitHub Actions & Issue Form (.github)
+      // 3. GitHub Actions & Issue Form (.github) with totalUsers & totalRuns tracking
       zip.file('.github/workflows/add-score.yml', WORKFLOW_YML);
       zip.file('.github/ISSUE_TEMPLATE/score.yml', ISSUE_TEMPLATE_YML);
-      zip.file('.github/scripts/add_score.py', getFileContent('.github/scripts/add_score.py'));
+      zip.file('.github/scripts/add_score.py', UPDATED_ADD_SCORE_PY);
 
       // 4. Dist files (authentic 2690-byte ZX81 tape binary crimecity_mc.p)
       const pBytes = Uint8Array.from(atob(PB64), (c) => c.charCodeAt(0));
@@ -318,7 +373,7 @@ export default function App() {
   const gitInitCommands = `# Push into your GitHub repository
 git init -b main
 git add -A
-git commit -m "Deploy CRIME CITY ZX81 emulator, screenshots & GitHub Pages leaderboard"
+git commit -m "Add total users and total runs counters to high score table"
 git remote add origin https://github.com/${repoOwner || 'YOUR-NAME'}/${repoName || 'crimecity'}.git
 git push -u origin main`;
 
@@ -344,7 +399,7 @@ git push -u origin main`;
 
   const mergedDisplayScores = [
     ...centralScores.map((e) => ({ ...e, source: 'docs/data/scores.json' })),
-    ...pendingScores.map((e) => ({ ...e, by: 'local-browser', source: 'pending (local)' })),
+    ...pendingScores.map((e) => ({ ...e, by: repoOwner || 'local-browser', source: 'pending (local)' })),
     ...DEFAULT_ROM_SCORES.map((e) => ({ ...e, source: 'ZX81 REM default' })),
   ]
     .sort((a, b) => b.s - a.s)
@@ -366,10 +421,17 @@ git push -u origin main`;
         <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-zinc-400">
           <a
             href="#emulator"
-            onClick={() => setActiveTab('README')}
+            onClick={() => setActiveTab('SCORES')}
             className="hover:text-white transition-colors whitespace-nowrap shrink-0"
           >
             Z80 Emulator
+          </a>
+          <a
+            href="#deployment-hub"
+            onClick={() => setActiveTab('SCORES')}
+            className="hover:text-white transition-colors whitespace-nowrap shrink-0"
+          >
+            High Scores & Counters
           </a>
           <a
             href="#deployment-hub"
@@ -377,13 +439,6 @@ git push -u origin main`;
             className="hover:text-white transition-colors whitespace-nowrap shrink-0"
           >
             README & Screenshots
-          </a>
-          <a
-            href="#deployment-hub"
-            onClick={() => setActiveTab('AUDIT')}
-            className="hover:text-white transition-colors whitespace-nowrap shrink-0"
-          >
-            GitHub Setup
           </a>
           <a
             href="#deployment-hub"
@@ -414,15 +469,13 @@ git push -u origin main`;
         <div className="mb-8 pb-6 border-b border-zinc-800 flex flex-col lg:flex-row lg:items-end justify-between gap-6">
           <div className="space-y-2 max-w-3xl">
             <div className="text-xs font-mono text-red-400">
-              AUTHENTIC Z80 MACHINE CODE ($4082) · FORMATTED README + 3 ZX81 SCREENSHOTS READY
+              AUTHENTIC Z80 MACHINE CODE ($4082) · USERS & TOTAL RUNS COUNTERS ACTIVE ON HIGH SCORE TABLE
             </div>
             <h1 className="font-display text-2xl sm:text-4xl font-bold tracking-tight text-white">
-              CRIME CITY for the ZX81 — Live Z80 Emulator & GitHub Pages Kit
+              CRIME CITY for the ZX81 — Live Z80 Emulator & Leaderboard Counters
             </h1>
             <p className="text-sm text-zinc-400 leading-relaxed">
-              We generated 3 pixel-exact ZX81 screenshots (<code className="text-zinc-200">docs/screenshots/title.svg</code>,{' '}
-              <code className="text-zinc-200">docs/screenshots/gameplay.svg</code>, and{' '}
-              <code className="text-zinc-200">docs/screenshots/highscore.svg</code>) using the game&apos;s authentic 5×7 font and dithered city blocks, and formatted your complete <code className="text-zinc-200">README.md</code> with badges, tables, and embedded screenshots. Both are included in the **Download Complete Repo (.ZIP)** button.
+              The ZX81 high-score screen now renders <code className="text-zinc-200">USERS:{String(totalUsers).padStart(5, '0')} RUNS:{String(totalRuns).padStart(5, '0')}</code> directly below the top 5 scores on row 15 of the ZX81 Display File, and increments the run counter automatically every time you press <code className="text-zinc-200">SPACE</code> to launch a game (<code className="text-zinc-200">SYM.newgame</code>). Both counters are also stored in <code className="text-zinc-200">docs/data/scores.json</code> and updated by <code className="text-zinc-200">.github/scripts/add_score.py</code>.
             </p>
           </div>
 
@@ -462,6 +515,9 @@ git push -u origin main`;
             <ZX81Emulator
               centralScores={centralScores}
               pendingScores={pendingScores}
+              totalUsers={totalUsers}
+              totalRuns={totalRuns}
+              onIncrementRuns={handleIncrementRuns}
               onAddPendingScore={handleAddPendingScore}
               onDiscardTopPending={handleDiscardTopPending}
               repoOwner={repoOwner}
@@ -469,15 +525,15 @@ git push -u origin main`;
             />
           </section>
 
-          {/* Right 5 Columns: Formatted README, Screenshots & GitHub Pages Hub */}
+          {/* Right 5 Columns: High-Score Table with Users/Runs Counters, README, and Files */}
           <section id="deployment-hub" className="lg:col-span-5 flex flex-col gap-4">
             {/* Segmented Tab Controls */}
             <div className="flex items-center gap-1 p-1 bg-zinc-900 border border-zinc-800 rounded-xl">
               {[
-                { id: 'README' as WorkspaceTab, label: '1. README & Shots' },
-                { id: 'AUDIT' as WorkspaceTab, label: '2. GitHub Steps' },
-                { id: 'FILES' as WorkspaceTab, label: '3. Repo Files' },
-                { id: 'SCORES' as WorkspaceTab, label: '4. Test Action' },
+                { id: 'SCORES' as WorkspaceTab, label: '1. High Scores' },
+                { id: 'README' as WorkspaceTab, label: '2. README & Shots' },
+                { id: 'AUDIT' as WorkspaceTab, label: '3. GitHub Steps' },
+                { id: 'FILES' as WorkspaceTab, label: '4. Repo Files' },
               ].map((tab) => (
                 <button
                   key={tab.id}
@@ -494,7 +550,173 @@ git push -u origin main`;
               ))}
             </div>
 
-            {/* TAB 1: FORMATTED README & SCREENSHOTS GALLERY */}
+            {/* TAB 1: HIGH-SCORE TABLE WITH TOTAL USERS & TOTAL RUNS COUNTERS */}
+            {activeTab === 'SCORES' && (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4">
+                <div className="border-b border-zinc-800 pb-3">
+                  <h2 className="font-display text-lg font-bold text-white">
+                    Shared High-Score Table & Telemetry Counters
+                  </h2>
+                  <p className="text-xs text-zinc-400">
+                    Synced with row 15 of the ZX81 high-score screen (<code className="text-zinc-200">USERS:nnnnn RUNS:nnnnn</code>) and <code className="text-zinc-200">docs/data/scores.json</code>.
+                  </p>
+                </div>
+
+                {/* Total Users & Total Runs Counter Cards */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-3.5 bg-zinc-950 border border-zinc-800 rounded-lg flex flex-col justify-between">
+                    <div className="flex items-center justify-between text-xs font-mono text-zinc-400">
+                      <span>TOTAL NO. OF USERS</span>
+                      <Users className="w-4 h-4 text-red-400" />
+                    </div>
+                    <div className="mt-2 flex items-baseline justify-between">
+                      <span className="font-mono text-2xl font-bold text-white tabular-nums">
+                        {String(totalUsers).padStart(5, '0')}
+                      </span>
+                      <span className="text-[11px] font-mono text-zinc-500">
+                        unique players
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 bg-zinc-950 border border-zinc-800 rounded-lg flex flex-col justify-between">
+                    <div className="flex items-center justify-between text-xs font-mono text-zinc-400">
+                      <span>TOTAL TIMES RUN</span>
+                      <Activity className="w-4 h-4 text-emerald-400" />
+                    </div>
+                    <div className="mt-2 flex items-baseline justify-between">
+                      <span className="font-mono text-2xl font-bold text-emerald-400 tabular-nums">
+                        {String(totalRuns).padStart(5, '0')}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleIncrementRuns}
+                        className="text-[11px] font-mono text-zinc-400 hover:text-white underline cursor-pointer"
+                        title="Simulate starting another game run"
+                      >
+                        +1 run
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {actionSimNotice && (
+                  <div className="p-3 bg-zinc-950 border border-emerald-500/40 rounded-lg text-xs font-mono text-emerald-300 flex items-start gap-2">
+                    <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+                    <span>{actionSimNotice}</span>
+                  </div>
+                )}
+
+                {/* Live Combined High-Score Table */}
+                <div className="overflow-x-auto bg-zinc-950 border border-zinc-800 rounded-lg p-3">
+                  <div className="flex items-center justify-between pb-2 mb-2 border-b border-zinc-800 text-[11px] font-mono text-zinc-400">
+                    <span>CRIME CITY HIGH SCORES</span>
+                    <span className="text-zinc-200 tabular-nums">
+                      USERS:{String(totalUsers).padStart(5, '0')} · RUNS:{String(totalRuns).padStart(5, '0')}
+                    </span>
+                  </div>
+                  <table className="w-full text-left border-collapse text-xs font-mono">
+                    <thead>
+                      <tr className="border-b border-zinc-800 text-zinc-400">
+                        <th className="py-1.5 pr-2">#</th>
+                        <th className="py-1.5 px-2">INIT</th>
+                        <th className="py-1.5 px-2">SCORE</th>
+                        <th className="py-1.5 px-2">CHECK</th>
+                        <th className="py-1.5 pl-2">PLAYER</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-800/60 tabular-nums">
+                      {mergedDisplayScores.map((entry, idx) => (
+                        <tr key={`${entry.n}-${entry.s}-${idx}`} className="text-zinc-200">
+                          <td className="py-2 pr-2 text-zinc-500">{idx + 1}</td>
+                          <td className="py-2 px-2 font-bold text-white">{entry.n}</td>
+                          <td className="py-2 px-2 text-emerald-400">
+                            {String(entry.s).padStart(5, '0')}
+                          </td>
+                          <td className="py-2 px-2 text-zinc-400">
+                            {computeCheckCode(entry.n, entry.s)}
+                          </td>
+                          <td className="py-2 pl-2 text-zinc-400">
+                            @{entry.by || 'rom'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Simulate Score & Counter Submission */}
+                <div className="p-3.5 bg-zinc-950 border border-zinc-800 rounded-lg space-y-3">
+                  <div className="text-xs font-mono text-zinc-300 font-semibold">
+                    TEST SCORE & COUNTER UPDATE (ADD_SCORE.PY)
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-[10px] font-mono text-zinc-400 mb-1">
+                        INITIALS (A-Z)
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={3}
+                        value={testInitials}
+                        onChange={(e) => setTestInitials(e.target.value.toUpperCase())}
+                        className="w-full px-2.5 py-1.5 text-xs font-mono bg-zinc-900 border border-zinc-800 rounded text-white uppercase"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-mono text-zinc-400 mb-1">
+                        SCORE (1–65535)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={testScore}
+                        onChange={(e) => setTestScore(Number(e.target.value))}
+                        className="w-full px-2.5 py-1.5 text-xs font-mono bg-zinc-900 border border-zinc-800 rounded text-white tabular-nums"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-mono text-zinc-400 mb-1">
+                        GITHUB USER
+                      </label>
+                      <input
+                        type="text"
+                        value={testUser}
+                        onChange={(e) => setTestUser(e.target.value)}
+                        className="w-full px-2.5 py-1.5 text-xs font-mono bg-zinc-900 border border-zinc-800 rounded text-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleSimulateGitHubAction}
+                      className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-mono font-semibold rounded flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      <span>Simulate add_score.py Commit</span>
+                    </button>
+                    <a
+                      href={`https://github.com/${repoOwner || 'YOUR-NAME'}/${repoName || 'crimecity'}/issues/new?template=score.yml&title=${encodeURIComponent(
+                        `[score] ${testInitials} ${testScore}`
+                      )}&initials=${encodeURIComponent(testInitials)}&score=${encodeURIComponent(
+                        String(testScore)
+                      )}&check=${encodeURIComponent(computeCheckCode(testInitials, testScore))}&runs=${localSessionRuns}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-mono rounded flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                    >
+                      <span>Open GitHub Issue URL</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2: FORMATTED README & SCREENSHOTS GALLERY */}
             {activeTab === 'README' && (
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-5">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800 pb-3">
@@ -503,7 +725,7 @@ git push -u origin main`;
                       Formatted README.md & ZX81 Screenshots
                     </h2>
                     <p className="text-xs text-zinc-400">
-                      Bundled inside <code className="text-zinc-200">docs/screenshots/*.svg</code> and linked in <code className="text-zinc-200">README.md</code>.
+                      Includes the <code className="text-zinc-200">USERS:00012 RUNS:00084</code> row in <code className="text-zinc-200">docs/screenshots/title.svg</code>.
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -599,26 +821,26 @@ git push -u origin main`;
               </div>
             )}
 
-            {/* TAB 2: AUDIT OF UPLOADED FILES & WHAT ELSE YOU NEED TO DO */}
+            {/* TAB 3: AUDIT OF UPLOADED FILES & WHAT ELSE YOU NEED TO DO */}
             {activeTab === 'AUDIT' && (
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-5">
                 <div className="p-3.5 bg-zinc-950 border border-amber-500/40 rounded-lg space-y-2">
                   <div className="flex items-center gap-2 text-xs font-mono font-semibold text-amber-400">
                     <AlertTriangle className="w-4 h-4 shrink-0" />
-                    <span>ALL MISSING FILES & SCREENSHOTS INCLUDED IN ZIP</span>
+                    <span>ALL MISSING FILES, COUNTERS & SCREENSHOTS INCLUDED IN ZIP</span>
                   </div>
                   <p className="text-xs text-zinc-300 leading-relaxed">
                     The **Download Complete Repo (.ZIP)** button bundles all 19 of your uploaded files plus:
                   </p>
                   <ul className="text-xs text-zinc-400 space-y-1 font-mono pl-1">
                     <li>
+                      • <strong className="text-zinc-200">docs/data/scores.json + add_score.py</strong> (now tracks <code className="text-zinc-200">totalUsers</code> &amp; <code className="text-zinc-200">totalRuns</code>)
+                    </li>
+                    <li>
                       • <strong className="text-zinc-200">README.md + docs/screenshots/*.svg</strong> (formatted README + 3 ZX81 screenshots)
                     </li>
                     <li>
-                      • <strong className="text-zinc-200">.github/workflows/add-score.yml</strong> (runs add_score.py on issue open)
-                    </li>
-                    <li>
-                      • <strong className="text-zinc-200">.github/ISSUE_TEMPLATE/score.yml</strong> (pre-filled score submission form)
+                      • <strong className="text-zinc-200">.github/workflows/add-score.yml &amp; score.yml</strong> (automated score &amp; run count action)
                     </li>
                     <li>
                       • <strong className="text-zinc-200">dist/crimecity_mc.p &amp; LICENSE</strong> (2,690-byte ZX81 tape file &amp; MIT licence)
@@ -639,9 +861,9 @@ git push -u origin main`;
                   {[
                     {
                       id: 1,
-                      title: '01. Download Complete Repo (.ZIP) with README & Screenshots',
+                      title: '01. Download Complete Repo (.ZIP) with Users/Runs Counters',
                       detail:
-                        'Click "Download Complete Repo (.ZIP)" in the top bar. It includes your formatted README.md, docs/screenshots/*.svg, docs/index.html, and .github/workflows/add-score.yml.',
+                        'Click "Download Complete Repo (.ZIP)" in the top bar. It includes your updated scores.json, add_score.py, formatted README.md, docs/screenshots/*.svg, and docs/index.html.',
                     },
                     {
                       id: 2,
@@ -659,7 +881,7 @@ git push -u origin main`;
                       id: 4,
                       title: '04. Settings → Actions → General: Read and write permissions',
                       detail:
-                        'Under "Workflow permissions", choose "Read and write permissions" and click Save so .github/workflows/add-score.yml can commit new scores to docs/data/scores.json.',
+                        'Under "Workflow permissions", choose "Read and write permissions" and click Save so .github/workflows/add-score.yml can commit new scores and run counts to docs/data/scores.json.',
                     },
                     {
                       id: 5,
@@ -728,7 +950,7 @@ git push -u origin main`;
               </div>
             )}
 
-            {/* TAB 3: REPOSITORY FILE INSPECTOR */}
+            {/* TAB 4: REPOSITORY FILE INSPECTOR */}
             {activeTab === 'FILES' && (
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4">
                 <div className="border-b border-zinc-800 pb-3">
@@ -743,15 +965,15 @@ git push -u origin main`;
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-[210px] overflow-y-auto pr-1">
                   {(
                     [
+                      'docs/data/scores.json',
+                      '.github/scripts/add_score.py',
+                      '.github/ISSUE_TEMPLATE/score.yml',
+                      'docs/index.html',
                       'README.md',
                       'docs/screenshots/title.svg',
                       'docs/screenshots/gameplay.svg',
                       'docs/screenshots/highscore.svg',
                       '.github/workflows/add-score.yml',
-                      '.github/ISSUE_TEMPLATE/score.yml',
-                      '.github/scripts/add_score.py',
-                      'docs/index.html',
-                      'docs/data/scores.json',
                       'dist/crimecity_basic_v2.txt',
                       'web/template_gh.html',
                       'web/z80.js',
@@ -804,117 +1026,6 @@ git push -u origin main`;
                 </div>
               </div>
             )}
-
-            {/* TAB 4: HIGH-SCORE CHECK-CODE & ACTION SIMULATOR */}
-            {activeTab === 'SCORES' && (
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4">
-                <div className="border-b border-zinc-800 pb-3">
-                  <h2 className="font-display text-lg font-bold text-white">
-                    GitHub Action & FNV-1a Check-Code Tester
-                  </h2>
-                  <p className="text-xs text-zinc-400">
-                    Simulates <code className="text-zinc-200">.github/scripts/add_score.py</code> (32-bit FNV-1a hash of{' '}
-                    <code className="text-zinc-200">&quot;INITIALS:SCORE:crimecity&quot;</code>) and updates the Z80 emulator&apos;s high score table live.
-                  </p>
-                </div>
-
-                {actionSimNotice && (
-                  <div className="p-3 bg-zinc-950 border border-emerald-500/40 rounded-lg text-xs font-mono text-emerald-300 flex items-start gap-2">
-                    <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
-                    <span>{actionSimNotice}</span>
-                  </div>
-                )}
-
-                <div className="p-3.5 bg-zinc-950 border border-zinc-800 rounded-lg space-y-3">
-                  <div className="grid grid-cols-3 gap-2">
-                    <div>
-                      <label className="block text-[10px] font-mono text-zinc-400 mb-1">
-                        INITIALS (A-Z)
-                      </label>
-                      <input
-                        type="text"
-                        maxLength={3}
-                        value={testInitials}
-                        onChange={(e) => setTestInitials(e.target.value.toUpperCase())}
-                        className="w-full px-2.5 py-1.5 text-xs font-mono bg-zinc-900 border border-zinc-800 rounded text-white uppercase"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-mono text-zinc-400 mb-1">
-                        SCORE (1–65535)
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={65535}
-                        value={testScore}
-                        onChange={(e) => setTestScore(Number(e.target.value))}
-                        className="w-full px-2.5 py-1.5 text-xs font-mono bg-zinc-900 border border-zinc-800 rounded text-white tabular-nums"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-mono text-zinc-400 mb-1">
-                        8-HEX CHECK CODE
-                      </label>
-                      <div className="px-2.5 py-1.5 text-xs font-mono bg-zinc-900 border border-zinc-800 rounded text-amber-400 font-bold tabular-nums">
-                        {computeCheckCode(testInitials, testScore)}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={handleSimulateGitHubAction}
-                      className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs font-mono font-semibold rounded flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0"
-                    >
-                      <Play className="w-3.5 h-3.5" />
-                      <span>Simulate add_score.py Commit</span>
-                    </button>
-                    <a
-                      href={`https://github.com/${repoOwner || 'YOUR-NAME'}/${repoName || 'crimecity'}/issues/new?template=score.yml&title=${encodeURIComponent(
-                        `[score] ${testInitials} ${testScore}`
-                      )}&initials=${encodeURIComponent(testInitials)}&score=${encodeURIComponent(
-                        String(testScore)
-                      )}&check=${encodeURIComponent(computeCheckCode(testInitials, testScore))}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-mono rounded flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
-                    >
-                      <span>Open GitHub Issue URL</span>
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
-                  </div>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse text-xs font-mono">
-                    <thead>
-                      <tr className="border-b border-zinc-800 text-zinc-400">
-                        <th className="py-2 pr-2">#</th>
-                        <th className="py-2 px-2">INIT</th>
-                        <th className="py-2 px-2">SCORE</th>
-                        <th className="py-2 px-2">CHECK CODE</th>
-                        <th className="py-2 pl-2">SOURCE</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-800/60 tabular-nums">
-                      {mergedDisplayScores.map((entry, idx) => (
-                        <tr key={`${entry.n}-${entry.s}-${idx}`} className="text-zinc-200">
-                          <td className="py-2 pr-2 text-zinc-500">{idx + 1}</td>
-                          <td className="py-2 px-2 font-bold text-white">{entry.n}</td>
-                          <td className="py-2 px-2 text-emerald-400">{entry.s}</td>
-                          <td className="py-2 px-2 text-zinc-400">
-                            {computeCheckCode(entry.n, entry.s)}
-                          </td>
-                          <td className="py-2 pl-2 text-zinc-400">{entry.source}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
           </section>
         </div>
       </main>
@@ -922,7 +1033,7 @@ git push -u origin main`;
       {/* Footer */}
       <footer className="border-t border-zinc-900 py-5 px-6 text-xs text-zinc-500 flex flex-wrap items-center justify-between gap-4 max-w-[1380px] w-full mx-auto">
         <div>CRIME CITY for the Sinclair ZX81 (16K) · Authentic Z80 Machine Code Emulator</div>
-        <div>Formatted README.md + 3 ZX81 SVG Screenshots Bundled</div>
+        <div>Total Users: {totalUsers} · Total Runs: {totalRuns}</div>
       </footer>
     </div>
   );
