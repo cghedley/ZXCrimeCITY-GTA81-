@@ -1,0 +1,29 @@
+name: Submit a high score
+description: Add a score from the CRIME CITY browser game to the shared table
+title: "[score] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Press **Submit new issue** below. A GitHub Action will check the score, add it to the table, and close this issue.
+  - type: input
+    id: initials
+    attributes:
+      label: Initials
+      description: Three letters A–Z
+    validations:
+      required: true
+  - type: input
+    id: score
+    attributes:
+      label: Score
+      description: Whole number 1–65535
+    validations:
+      required: true
+  - type: input
+    id: check
+    attributes:
+      label: Check code
+      description: Filled in by the game
+    validations:
+      required: true
